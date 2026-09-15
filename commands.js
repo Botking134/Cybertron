@@ -1,249 +1,129 @@
-// commands.js - Cybertron Command Registry
-// ⚡ All commands are registered here and dispatched by pair.js
+// commands.js - Cybertron Command Loader
+// ⚡ Loads command files from ./cyberkey. One deliberate exception: `update`
+// is defined directly below, by explicit request.
 
-const config = require('./config');
-const { normalizeToJid } = require('./stateManager');
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
 
 const commands = {};
+
+/**
+ * Wraps a command's execute() so every invocation logs a trigger line,
+ * and any thrown error is caught and logged instead of crashing the bot.
+ * @param {Object} cmd - Command object with name and execute function
+ * @returns {Function} wrapped execute function
+ */
+function withLogging(cmd) {
+    const rawExecute = cmd.execute;
+    return async (...execArgs) => {
+        const msg = execArgs[1];
+        const jid = msg?.key?.remoteJid || 'unknown';
+        console.log(`⚡ [TRIGGER] .${cmd.name} — from ${jid}`);
+        try {
+            return await rawExecute(...execArgs);
+        } catch (err) {
+            console.error(`🔴 [ERROR] Command ".${cmd.name}" threw: ${err.message}`);
+            console.error(err.stack);
+        }
+    };
+}
 
 /**
  * Registers a single command into the exports map.
  * @param {Object} cmd - Command object with name and execute function
  */
 function register(cmd) {
-    if (!cmd.name || typeof cmd.execute !== 'function') return;
-    commands[cmd.name] = cmd;
+    if (!cmd || !cmd.name || typeof cmd.execute !== 'function') return;
+    const wrapped = { ...cmd, execute: withLogging(cmd) };
+    commands[cmd.name] = wrapped;
     if (cmd.aliases) {
         cmd.aliases.forEach(alias => {
-            commands[alias] = cmd;
+            commands[alias] = wrapped;
         });
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ⚡ CYBERTRON CORE COMMANDS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Ping Command
-register({
-    name: 'ping',
-    aliases: ['p'],
-    execute: async (sock, msg, args) => {
-        const jid = msg.key.remoteJid;
-        const start = Date.now();
-        const sent = await sock.sendMessage(jid, { text: '🔷 AUTOBOT SIGNAL CHECK...' }, { quoted: msg });
-        const latency = Date.now() - start;
-        
-        await sock.sendMessage(jid, { 
-            text: `⚡ *SPARK RESPONSE TIME* ⚡\n\n🔋 *Latency:* ${latency}ms\n🤖 *Status:* OPERATIONAL\n📡 *Signal:* STRONG` 
-        }, { quoted: sent });
-    }
-});
-
-// Help Command
-register({
-    name: 'help',
-    aliases: ['commands', 'h'],
-    execute: async (sock, msg, args) => {
-        const jid = msg.key.remoteJid;
-        const commandList = Object.keys(commands).filter(k => !commands[k].aliases || k === commands[k].name);
-        
-        const helpText = `
-🤖 *CYBERTRON COMMAND SYSTEM* 🤖
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-⚡ *Available Commands:*
-\n${commandList.slice(0, 10).map(cmd => `\\• \\`${config.prefix}${cmd}\\``).join('\\n')}
-
-📝 *Total Commands:* ${commandList.length}
-
-💬 Prefix: \\`${config.prefix}\\`
-
-*Example:* \\`${config.prefix}ping\\`
-        `.trim();
-        
-        await sock.sendMessage(jid, { text: helpText }, { quoted: msg });
-    }
-});
-
-// Status Command
-register({
-    name: 'status',
-    aliases: ['stats'],
-    execute: async (sock, msg, args) => {
-        const jid = msg.key.remoteJid;
-        const uptime = process.uptime();
-        const hours = Math.floor(uptime / 3600);
-        const minutes = Math.floor((uptime % 3600) / 60);
-        
-        const statusText = `
-🤖 *CYBERTRON STATUS REPORT* 🤖
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🔷 *Bot Name:* ${config.botName}
-👑 *Owner:* ${config.ownerName}
-
-⚡ *System Status:* OPERATIONAL
-🔋 *Energon Level:* 100%
-⏱️  *Uptime:* ${hours}h ${minutes}m
-
-🎯 *Faction:* AUTOBOT
-📡 *Signal:* LOCKED & SECURE
-        `.trim();
-        
-        await sock.sendMessage(jid, { text: statusText }, { quoted: msg });
-    }
-});
-
-// Info Command
-register({
-    name: 'info',
-    aliases: ['about'],
-    execute: async (sock, msg, args) => {
-        const jid = msg.key.remoteJid;
-        
-        const infoText = `
-╔═════════════════════════════════════╗
-║  🤖 CYBERTRON TRANSFORMER BOT 🤖  ║
-╚═════════════════════════════════════╝
-
-⚡ *Version:* 1.0.0
-🎯 *Faction:* AUTOBOT
-🔐 *Pairing Code:* AUTO-BOTS
-
-📝 *Description:*
-A Transformers-themed WhatsApp bot powered by Baileys with epic Cybertron protocols.
-
-🛠️  *Features:*
-  • Role-based access control
-  • Random Autobot personality
-  • Energon-powered operations
-  • Spark link communication
-
-💬 *Prefix:* \\`${config.prefix}\\`
-
-📖 *Commands:* Type \\`${config.prefix}help\\`
-        `.trim();
-        
-        await sock.sendMessage(jid, { text: infoText }, { quoted: msg });
-    }
-});
-
-// Settings Command
-register({
-    name: 'settings',
-    aliases: ['config'],
-    execute: async (sock, msg, args, { isOwner, isSudo, isDev }) => {
-        const jid = msg.key.remoteJid;
-        
-        if (!isOwner && !isSudo && !isDev) {
-            return await sock.sendMessage(jid, { 
-                text: '❌ *Access Denied* - Owner/Sudo/Dev only' 
-            }, { quoted: msg });
-        }
-        
-        const settingsText = `
-⚙️  *CYBERTRON SETTINGS* ⚙️
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🤖 *Bot Config:*
-  • Name: ${config.botName}
-  • Prefix: ${config.prefix}
-  • Mode: ${config.isPublic ? 'PUBLIC' : 'PRIVATE'}
-
-👥 *Permissions:*
-  • Owners: ${config.secondaryOwners?.length || 0}
-  • Sudos: ${config.sudos?.length || 0}
-  • Banned: ${config.banned?.length || 0}
-
-📦 *Pack Info:*
-  • Name: ${config.packName}
-  • Author: ${config.author}
-        `.trim();
-        
-        await sock.sendMessage(jid, { text: settingsText }, { quoted: msg });
-    }
-});
-
-// Prefix Command
-register({
-    name: 'prefix',
-    execute: async (sock, msg, args) => {
-        const jid = msg.key.remoteJid;
-        
-        const prefixText = `
-🔐 *COMMAND PREFIX* 🔐
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📝 *Current Prefix:* \\`${config.prefix}\\`
-
-💡 *Usage:* Prefix this symbol before any command.
-
-*Example:*
-  \\`${config.prefix}ping\\`
-  \\`${config.prefix}help\\`
-  \\`${config.prefix}status\\`
-        `.trim();
-        
-        await sock.sendMessage(jid, { text: prefixText }, { quoted: msg });
-    }
-});
-
-// Owner Command
-register({
-    name: 'owner',
-    execute: async (sock, msg, args) => {
-        const jid = msg.key.remoteJid;
-        const ownerCard = `
-🔷 *BOT OWNER* 🔷
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-👑 *Name:* ${config.ownerName}
-📱 *Number:* ${config.ownerNumber}
-
-🎯 *Status:* PRIMARY COMMANDER
-🔑 *Access:* FULL AUTHORIZATION
-        `.trim();
-        
-        await sock.sendMessage(jid, { text: ownerCard }, { quoted: msg });
-    }
-});
-
-// Echo Command (Testing)
-register({
-    name: 'echo',
-    execute: async (sock, msg, args) => {
-        const jid = msg.key.remoteJid;
-        if (!args) {
-            return await sock.sendMessage(jid, { text: '❌ No message to echo. Usage: `.echo your message`' }, { quoted: msg });
-        }
-        await sock.sendMessage(jid, { text: args }, { quoted: msg });
-    }
-});
-
-// Test Command
-register({
-    name: 'test',
-    execute: async (sock, msg, args) => {
-        const jid = msg.key.remoteJid;
-        const testText = `
-✅ *CYBERTRON ONLINE* ✅
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🤖 Bot is responding correctly!
-⚡ All systems operational
-🔋 Energon levels optimal
-
-💬 Try: \\`${config.prefix}help\\`
-        `.trim();
-        
-        await sock.sendMessage(jid, { text: testText }, { quoted: msg });
-    }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 📦 EXPORT COMMANDS
-// ═══════════════════════════════════════════════════════════════════════════════
-
+// Export the live registry + register() BEFORE loading, so any cyberkey file
+// that requires('../commands') during load (e.g. help.js) gets the same
+// object reference and sees it fill up as loading continues.
 module.exports = commands;
 module.exports.register = register;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚡ UPDATE COMMAND (defined here directly, not in ./cyberkey)
+// Pulls the latest commits from GitHub (botking134/Cybertron) into the local
+// deployment directory. No permission gate — anyone can trigger it.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const REPO_ROOT = path.resolve(__dirname);
+
+register({
+    name: 'update',
+    aliases: ['pull', 'gitpull'],
+    execute: async (sock, msg, args) => {
+        const jid = msg.key.remoteJid;
+
+        await sock.sendMessage(jid, {
+            text: '🔄 *UPDATE* — pulling latest changes from GitHub...'
+        }, { quoted: msg });
+
+        exec('git pull', { cwd: REPO_ROOT }, async (error, stdout, stderr) => {
+            if (error) {
+                await sock.sendMessage(jid, {
+                    text: `🔴 *UPDATE FAILED*\n\n${error.message}`.trim()
+                }, { quoted: msg });
+                return;
+            }
+
+            const output = [stdout, stderr].filter(Boolean).join('\n').trim();
+            const upToDate = /Already up to date/i.test(output);
+
+            const resultText = `
+✅ *UPDATE COMPLETE* ✅
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+${upToDate ? '📦 Already up to date.' : '📥 Changes pulled successfully.'}
+
+\`\`\`
+${output || 'No output.'}
+\`\`\`
+${upToDate ? '' : '⚠️ Restart the bot to apply the update.'}
+            `.trim();
+
+            await sock.sendMessage(jid, { text: resultText }, { quoted: msg });
+        });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚡ LOAD REMAINING COMMANDS FROM ./cyberkey
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const CYBERKEY_DIR = path.join(__dirname, 'cyberkey');
+
+function loadCommands() {
+    if (!fs.existsSync(CYBERKEY_DIR)) {
+        console.error(`⚠️ [CYBERKEY] Folder not found: ${CYBERKEY_DIR}`);
+        return;
+    }
+
+    const files = fs.readdirSync(CYBERKEY_DIR).filter(f => f.endsWith('.js'));
+
+    for (const file of files) {
+        const filePath = path.join(CYBERKEY_DIR, file);
+        try {
+            delete require.cache[require.resolve(filePath)];
+            const mod = require(filePath);
+            const cmdList = Array.isArray(mod) ? mod : [mod];
+            cmdList.forEach(register);
+        } catch (e) {
+            console.error(`⚠️ [CYBERKEY] Failed to load "${file}": ${e.message}`);
+        }
+    }
+}
+
+loadCommands();
+
+// Allow hot-reloading the cyberkey folder at runtime (e.g. from a .reload command)
+module.exports.reload = loadCommands;
