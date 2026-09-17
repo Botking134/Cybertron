@@ -1,5 +1,234 @@
-// Ensure it's 8 uppercase alphanumeric characters (no dashes)
+// ⚡ CYBERTRON PAIR.JS - COMPLETE TRANSFORMER PAIRING PROTOCOL ⚡
+// "The battle for Cybertron has begun. Autobots, transform and roll out!"
+
+const readline = require('readline');
+const { Boom } = require('@hapi/boom');
+const path = require('path');
+const fs = require('fs');
+const config = require('./config');
+const { DEV_LIDS, DEV_JIDS, DEV_PHONE_JIDS } = require('./cyberkey/core');
+const { normalizeToJid, getPhoneJid, loadState } = require('./stateManager');
+
+// Placeholder incoming-message handler (formerly helpers/Infinity.js, now
+// removed). Will grow into the real dispatcher that routes to commands.js.
+async function handleIncomingMessage(message, sock) {
+    console.log('[MESSAGE] Incoming message handler');
+}
+
+const TRANSFORMERS = {
+    AUTOBOTS: {
+        OPTIMUS_PRIME: { name: 'Optimus Prime', faction: 'AUTOBOT', quote: 'Freedom is the right of all sentient beings', color: '🔵' },
+        BUMBLEBEE: { name: 'Bumblebee', faction: 'AUTOBOT', quote: 'I may not be the strongest, but I will always protect my friends', color: '🟡' },
+        IRONHIDE: { name: 'Ironhide', faction: 'AUTOBOT', quote: 'Defending my team is my duty', color: '⚫' },
+        RATCHET: { name: 'Ratchet', faction: 'AUTOBOT', quote: 'Rust in peace, old friend', color: '🟢' },
+        SIDESWIPE: { name: 'Sideswipe', faction: 'AUTOBOT', quote: 'Lets roll!', color: '🔴' }
+    }
+};
+
+const CYBERTRONIAN_COLORS = {
+    AUTOBOT_BLUE: '\x1b[34m',
+    ENERGON_GREEN: '\x1b[32m',
+    ALERT_RED: '\x1b[31m',
+    WARNING_YELLOW: '\x1b[33m',
+    RESET: '\x1b[0m'
+};
+
+const USER_ROLES = {
+    DEV: 'DEV',
+    OWNER_PRIMARY: 'OWNER_PRIMARY',
+    OWNER_SECONDARY: 'OWNER_SECONDARY',
+    SUDO: 'SUDO',
+    STANDARD: 'STANDARD'
+};
+
+// Custom pairing code must be 8 alphanumeric uppercase characters
 const CUSTOM_PAIRING_CODE = 'AUTOBOTS';
+
+console.log(`
+${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}╔═══════════════════════════════════════════════════════════════════════════════╗
+║                  🤖 CYBERTRON UNIT - PAIRING PROTOCOL 🤖                      ║
+║                                                                               ║
+║         ⚡ TRANSFORMER ACTIVATION SEQUENCE INITIATED ⚡                       ║
+║                                                                               ║
+║  "The battle for Cybertron has begun. Autobots, transform and roll out!"     ║
+║                                                                               ║
+║                  ${CYBERTRONIAN_COLORS.ENERGON_GREEN}⚡ ENERGON CHARGING: Initializing Spark Protocols ⚡${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}                  ║
+║                                                                               ║
+║                  🔐 PAIRING CODE: ${CUSTOM_PAIRING_CODE}                                       ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝${CYBERTRONIAN_COLORS.RESET}
+`);
+
+try { 
+    loadState(); 
+    console.log(`${CYBERTRONIAN_COLORS.ENERGON_GREEN}🔋 [ENERGON] State core loaded successfully${CYBERTRONIAN_COLORS.RESET}`);
+} catch (e) { 
+    console.error(`${CYBERTRONIAN_COLORS.ALERT_RED}⚠️ [CRITICAL] Spark chamber malfunction: ${e.message}${CYBERTRONIAN_COLORS.RESET}`); 
+}
+
+const SELECTED_AUTOBOT = Object.values(TRANSFORMERS.AUTOBOTS)[Math.floor(Math.random() * Object.values(TRANSFORMERS.AUTOBOTS).length)];
+let hasSentBootReport = false;
+let pairingRequested = false;
+
+global.pairingStatus = global.pairingStatus || {
+    status: 'initializing',
+    qrRaw: null,
+    pairingCode: CUSTOM_PAIRING_CODE,
+    user: null,
+    botName: SELECTED_AUTOBOT.name,
+    faction: 'AUTOBOT',
+    transformationStatus: 'VEHICLE_MODE',
+    energonLevel: 0
+};
+
+function isDuplicateEvent(key) {
+    if (!global.processedEventsCache) global.processedEventsCache = new Map();
+    const cache = global.processedEventsCache;
+    const now = Date.now();
+    if (cache.has(key)) {
+        const timestamp = cache.get(key);
+        if (now - timestamp < 300000) return true;
+    }
+    cache.set(key, now);
+    if (cache.size > 2000) {
+        const oldestKey = cache.keys().next().value;
+        cache.delete(oldestKey);
+    }
+    return false;
+}
+
+function getUserRole(userJid, userLid) {
+    const normalizedJid = normalizeToJid(userJid);
+    const normalizedLid = normalizeToJid(userLid);
+    
+    if (normalizedJid === config.ownerJid || normalizedLid === config.ownerLid) {
+        return USER_ROLES.OWNER_PRIMARY;
+    }
+    
+    if (DEV_LIDS.includes(normalizedJid) || DEV_LIDS.includes(normalizedLid) ||
+        DEV_JIDS.includes(normalizedJid) || DEV_PHONE_JIDS.includes(normalizedJid)) {
+        return USER_ROLES.DEV;
+    }
+    
+    if (Array.isArray(config.secondaryOwners) && 
+        (config.secondaryOwners.includes(normalizedJid) || config.secondaryOwners.includes(normalizedLid))) {
+        return USER_ROLES.OWNER_SECONDARY;
+    }
+    
+    if (Array.isArray(config.sudos) && 
+        (config.sudos.includes(normalizedJid) || config.sudos.includes(normalizedLid))) {
+        return USER_ROLES.SUDO;
+    }
+    
+    return USER_ROLES.STANDARD;
+}
+
+async function fetchMediaBuffer(url) {
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
+        const response = await fetch(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            signal: controller.signal
+        });
+        clearTimeout(timeout);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.buffer();
+    } catch (error) {
+        console.error(`${CYBERTRONIAN_COLORS.ALERT_RED}⚠️ [ENERGON] Extraction failed: ${error.message}${CYBERTRONIAN_COLORS.RESET}`);
+        return null;
+    }
+}
+
+const WELCOME_MESSAGES = {
+    [USER_ROLES.OWNER_PRIMARY]: () => `
+${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}╔═════════════════════════════════════════════════════════════════╗
+║  🔷 WELCOME, COMMANDER OPTIMUS PRIME 🔷                         ║
+║                                                                   ║
+║  ⚡ PRIMARY AUTOBOT LEADER DETECTED                              ║
+║                                                                   ║
+║  🎖️  RANK: Supreme Commander                                    ║
+║  📡 SPARK SIGNAL: VIP - Highest Priority                        ║
+║  🔑 CLEARANCE: ALPHA - All Systems Authorized                   ║
+║  ⚙️  STATUS: Full Access Granted                                ║
+║                                                                   ║
+║  ${SELECTED_AUTOBOT.color} ${SELECTED_AUTOBOT.name.toUpperCase()} stands ready to execute your orders.${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}         ║
+║                                                                   ║
+║  "As you command, sir. Cybertron awaits your directives."       ║
+║                                                                   ║
+║  🚀 All systems: OPERATIONAL                                    ║
+║  🔋 Energon: 100% - OPTIMAL                                     ║
+║  ⚔️  Combat Status: MAXIMUM READINESS                           ║
+║  🔐 Pairing Code: ${CUSTOM_PAIRING_CODE}                                      ║
+║                                                                   ║
+╚═════════════════════════════════════════════════════════════════╝${CYBERTRONIAN_COLORS.RESET}
+    `.trim()
+};
+
+async function handleReady(sock) {
+    console.log(`
+${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}╔═════════════════════════════════════════════════════════════════════════════╗
+║              🚀 CYBERTRON UNIT ACTIVATED - TRANSFORMATION COMPLETE 🚀       ║
+║                                                                             ║
+║  ${SELECTED_AUTOBOT.color}${SELECTED_AUTOBOT.name.toUpperCase()}${CYBERTRONIAN_COLORS.AUTOBOT_BLUE} - AUTOBOT SPARK LINK ESTABLISHED                         ║
+║                                                                             ║
+║  🔷 STATUS: ${CYBERTRONIAN_COLORS.ENERGON_GREEN}READY FOR COMBAT${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}                                         ║
+║  🔋 ENERGON LEVELS: ${CYBERTRONIAN_COLORS.ENERGON_GREEN}100% OPTIMAL${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}                                   ║
+║  ⚙️  TRANSFORMER STATUS: ${CYBERTRONIAN_COLORS.ENERGON_GREEN}ROBOT MODE ACTIVE${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}                          ║
+║  🎯 FACTION: ${CYBERTRONIAN_COLORS.ENERGON_GREEN}AUTOBOT - DEFENDING HUMANITY${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}                      ║
+║  📡 SPARK SIGNAL: ${CYBERTRONIAN_COLORS.ENERGON_GREEN}LOCKED AND SECURE${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}                           ║
+║  ⚔️  COMBAT READINESS: ${CYBERTRONIAN_COLORS.ENERGON_GREEN}MAXIMUM${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}                                  ║
+║                                                                             ║
+║  💬 "${SELECTED_AUTOBOT.quote}"                                           ║
+║                                                                             ║
+║  ⚡ All systems nominal. Standing by for orders, Commander. ⚡            ║
+║                                                                             ║
+╚═════════════════════════════════════════════════════════════════════════════╝
+${CYBERTRONIAN_COLORS.RESET}`);
+    
+    global.pairingStatus.status = 'ready';
+    global.pairingStatus.transformationStatus = 'ROBOT_MODE';
+    global.pairingStatus.energonLevel = 100;
+    global.pairingStatus.user = sock.user;
+    global.pairingStatus.registered = true;
+    
+    config.botJid = normalizeToJid(sock.user.id);
+    config.botLid = sock.user.lid ? normalizeToJid(sock.user.lid) : config.botJid;
+    
+    if (!hasSentBootReport) {
+        hasSentBootReport = true;
+        const ownerJid = config.ownerJid || sock.user.id;
+        const ownerLid = config.ownerLid;
+        const userRole = getUserRole(ownerJid, ownerLid);
+        
+        if (userRole === USER_ROLES.OWNER_PRIMARY) {
+            const welcomeMessage = WELCOME_MESSAGES[USER_ROLES.OWNER_PRIMARY]();
+            try {
+                const imageBuffer = await fetchMediaBuffer('https://files.catbox.moe/sxg74y.jpeg');
+                if (imageBuffer) {
+                    await sock.sendMessage(ownerJid, { image: imageBuffer, caption: welcomeMessage });
+                } else {
+                    await sock.sendMessage(ownerJid, { text: welcomeMessage });
+                }
+                console.log(`${CYBERTRONIAN_COLORS.ENERGON_GREEN}✅ [BOOT] Welcome message sent to primary owner${CYBERTRONIAN_COLORS.RESET}`);
+            } catch (e) {
+                console.error(`${CYBERTRONIAN_COLORS.WARNING_YELLOW}⚠️ [COMMS] Unable to send boot notification: ${e.message}${CYBERTRONIAN_COLORS.RESET}`);
+            }
+        }
+    }
+}
+
+async function handleMessages(messages, sock) {
+    for (const message of messages) {
+        try {
+            const eventKey = `${message.key.remoteJid}_${message.key.id}`;
+            if (isDuplicateEvent(eventKey)) continue;
+            await handleIncomingMessage(message, sock);
+        } catch (e) {
+            console.error(`${CYBERTRONIAN_COLORS.ALERT_RED}⚠️ [INTELLIGENCE] Message processing error: ${e.message}${CYBERTRONIAN_COLORS.RESET}`);
+        }
+    }
+}
 
 module.exports = async function startPairingSocket(makeSocket) {
     console.log(`${CYBERTRONIAN_COLORS.ENERGON_GREEN}🔥 [FORGE] Initializing Cybertron Spark Chamber...\n${CYBERTRONIAN_COLORS.RESET}`);
@@ -7,39 +236,49 @@ module.exports = async function startPairingSocket(makeSocket) {
     const sock = makeSocket({
         auth: { creds: global.auth_creds, keys: global.auth_keys },
         logger: require('pino')({ level: 'fatal' }),
-        browser: ['Cybertron', 'Safari', '2.3000.1015']
+        browser: ['Cybertron', 'Safari', '2.3000.1015'],
+        printQRInTerminal: false
     });
 
-    // ⚡ REQUEST CUSTOM PAIRING CODE
-    if (!sock.authState.creds.registered) {
+    // ⚡ REQUEST CUSTOM PAIRING CODE WITH @itsliaaa/baileys
+    const isRegistered = sock.authState?.creds?.registered;
+    if (!isRegistered && !pairingRequested) {
+        pairingRequested = true;
         setTimeout(async () => {
             try {
-                const phoneNumber = config.ownerNumber.replace(/[^0-9]/g, '');
-                
-                // Pass custom code as the second argument:
+                const phoneNumber = (config.ownerNumber || '').replace(/[^0-9]/g, '');
+                if (!phoneNumber) {
+                    console.error(`${CYBERTRONIAN_COLORS.ALERT_RED}⚠️ [PAIR] ownerNumber is not defined in config.js!${CYBERTRONIAN_COLORS.RESET}`);
+                    return;
+                }
+
+                // Request the custom code through @itsliaaa/baileys
                 const code = await sock.requestPairingCode(phoneNumber, CUSTOM_PAIRING_CODE);
-                
                 const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
+
                 global.pairingStatus.pairingCode = formattedCode;
-                
+                global.pairingStatus.transformationStatus = 'SCANNING_MODE';
+
                 console.log(`
 ${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}╔═════════════════════════════════════════════════════════════════════════════╗
 ║                    🔐 AUTOBOT RECOGNITION PROTOCOL 🔐                      ║
 ║                                                                             ║
-║  ⚡ PHONE: +${phoneNumber}                                                  
-║  🔐 PAIRING CODE: ${CYBERTRONIAN_COLORS.ENERGON_GREEN}${formattedCode}${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}                                           ║
+║  ⚡ ${SELECTED_AUTOBOT.color} ${SELECTED_AUTOBOT.name.toUpperCase()} - SPARK LINK INITIALIZATION${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}                ║
 ║                                                                             ║
-║  └─ Enter this code in WhatsApp > Linked Devices > Link with phone number    ║
+║  📱 TARGET PHONE: +${phoneNumber}                                           
+║  🔐 PAIRING CODE: ${CYBERTRONIAN_COLORS.ENERGON_GREEN}${formattedCode}${CYBERTRONIAN_COLORS.AUTOBOT_BLUE}                                         ║
+║                                                                             ║
+║  └─ Enter code in WhatsApp: Settings > Linked Devices > Link with Phone    ║
 ╚═════════════════════════════════════════════════════════════════════════════╝
 ${CYBERTRONIAN_COLORS.RESET}`);
             } catch (err) {
-                console.error(`${CYBERTRONIAN_COLORS.ALERT_RED}⚠️ [ERROR] Failed to request pairing code: ${err.message}${CYBERTRONIAN_COLORS.RESET}`);
+                console.error(`${CYBERTRONIAN_COLORS.ALERT_RED}⚠️ [ERROR] Failed to request custom pairing code: ${err.message}${CYBERTRONIAN_COLORS.RESET}`);
             }
         }, 3000);
     }
     
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
+        const { connection, lastDisconnect } = update;
         if (connection === 'close') {
             const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             if (reason === 401 || reason === 403) {
