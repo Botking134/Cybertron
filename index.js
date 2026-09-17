@@ -17,6 +17,7 @@ const { execSync } = require('child_process');
 
 const config = require('./config');
 const { loadState } = require('./stateManager');
+const { DEV_LIDS } = require('./cyberkey/core');
 const startPairingSocket = require('./pair');
 
 // ═══════════════════════════════════════════════════════════════════════════════
